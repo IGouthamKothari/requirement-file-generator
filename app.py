@@ -53,13 +53,7 @@ def clean_numeric(x):
 
 def merge_group(group):
     parent = group.iloc[0].copy()
-    merged_material = str(parent["Material"]).strip() if pd.notna(parent["Material"]) else ""
-    for idx in range(1, len(group)):
-        child = group.iloc[idx]
-        child_detail = str(child["Units"]).strip() if pd.notna(child["Units"]) else ""
-        if child_detail and child_detail.lower() not in merged_material.lower():
-            merged_material += " " + child_detail
-    parent["Material"] = merged_material
+    parent["Material"] = str(parent["Material"]).strip() if pd.notna(parent["Material"]) else ""
     for col in ["Qty. per unit", "No of units", "Total Qty."]:
         total = group[col].apply(clean_numeric).sum()
         parent[col] = total
