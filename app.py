@@ -1,95 +1,84 @@
 import io
 import os
 import re
-import zipfile
 import shutil
 import tempfile
 import pandas as pd
 import streamlit as st
 
-def extract_data_from_excel(excel_file):
-    """Extracts data from the new Excel format."""
-    df_temp = pd.read_excel(excel_file, sheet_name=0, header=[7, 8])  # Read multi-row header
+def extract_top_info(df):
+    """Extracts job number, client name, and order quantity from the first few rows."""
+    job_number = None
+    client_name = None
+    top_qty = 0
+    for i in range(len(df)):
+        row_values = df.iloc[i].astype(str).str.strip().tolist()
+        row_str = " ".join(row_values).lower()
+        if "job no." in row_str:
+            job_number = row_values[-1]  # Assume job number is the last value in row
+        if "customer" in row_str:
+            client_name = row_values[-1]
+        if "order qty." in row_str:
+            qty_match = re.search(r"(\d+)", row_str)
+            if qty_match:
+                top_qty = int(qty_match.group(1))
+    return job_number, client_name, top_qty
+
+def process_excel(file_path):
+    xls = pd.ExcelFile(file_path)
+    sheet_name = xls.sheet_names[0]  # Assume first sheet
+    df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
     
-    # Rename columns to expected format
-    column_mapping = {
-        ('SR.', 'NO.'): 'Sr.No.',
-        ('SPECIFICATION', '\xa0'): 'Material',
-        ('UNIT', '\xa0'): 'Units',
-        ('QTY/', 'UNIT'): 'Qty. per unit',
-        ('NO. OF', 'UNIT'): 'No of units',
-        ('TOTAL', 'QTY'): 'Total Qty.'
+    job_number, client_name, top_qty = extract_top_info(df)
+    
+    header_row_index = 7  # Based on detected header position
+    df = pd.read_excel(xls, sheet_name=sheet_name, header=header_row_index)
+    
+    expected_columns = {
+        "SR. NO.": "Sr.No.",
+        "MATERIAL": "Material",
+        "SPECIFICATION": "Specification",
+        "UNIT": "Units",
+        "QTY/ UNIT": "Qty. per unit",
+        "NO. OF UNIT": "No of units",
+        "TOTAL QTY": "Total Qty."
     }
     
-    df_temp.rename(columns=column_mapping, inplace=True)
-    df_temp = df_temp[list(column_mapping.values())]  # Keep only required columns
+    df.rename(columns=expected_columns, inplace=True)
+    df = df[list(expected_columns.values())]  # Keep only relevant columns
     
-    # Convert numeric columns
-    for col in ['Qty. per unit', 'No of units', 'Total Qty.']:
-        df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0)
+    df.dropna(subset=["Material"], inplace=True)  # Remove empty rows
+    df["Total Qty."] = df["Total Qty."].apply(pd.to_numeric, errors="coerce").fillna(0)
     
-    # Remove empty material rows
-    df_temp = df_temp[df_temp['Material'].notna()]
-    df_temp['Material'] = df_temp['Material'].astype(str).str.strip()
-    
-    return df_temp
+    return df, job_number, client_name, top_qty
 
-def process_excel_files(input_files):
-    logs = []
-    output_excel = io.BytesIO()
-    all_data = []
-    
-    for file_path, original_file in input_files:
-        try:
-            df = extract_data_from_excel(file_path)
-            all_data.append(df)
-        except Exception as e:
-            logs.append(f"Error processing {original_file}: {str(e)}")
-    
-    if all_data:
-        combined_df = pd.concat(all_data, ignore_index=True)
-        combined_df.to_excel(output_excel, index=False, sheet_name='ProcessedData')
-    
-    output_excel.seek(0)
-    return output_excel, logs
+st.title("Updated Excel Processor")
+uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
 
-# Streamlit Frontend
-st.title("Excel Processor - New Format")
-st.write("Upload Excel files to process them.")
-
-uploaded_files = st.file_uploader("Choose Excel files", type=["xlsx", "xls"], accept_multiple_files=True)
-
-if st.button("Process Files"):
-    if not uploaded_files:
-        st.error("Please upload at least one file.")
-    else:
-        file_info = []
-        for file in uploaded_files:
-            file_bytes = file.read()
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-            tmp.write(file_bytes)
-            tmp.close()
-            file_info.append((tmp.name, file.name))
-        
-        output_excel_io, logs = process_excel_files(file_info)
-        
-        st.subheader("Validation Errors")
-        if logs:
-            st.text_area("Errors", "\n".join(logs), height=200)
-        else:
-            st.success("No validation errors.")
-        
-        output_excel_io.seek(0)
-        df_preview = pd.read_excel(output_excel_io, sheet_name='ProcessedData')
-        st.subheader("Processed Data Preview")
-        st.dataframe(df_preview)
-        
-        st.download_button(
-            label="Download Processed Excel",
-            data=output_excel_io,
-            file_name="processed_data.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-        for tmp_path, _ in file_info:
-            os.remove(tmp_path)
+if uploaded_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        tmp.write(uploaded_file.read())
+        tmp_path = tmp.name
+    
+    df_processed, job_no, client, top_qty = process_excel(tmp_path)
+    
+    st.subheader("Processed Data Preview")
+    st.dataframe(df_processed)
+    
+    st.write(f"**Job Number:** {job_no}")
+    st.write(f"**Client Name:** {client}")
+    st.write(f"**Total Order Quantity:** {top_qty}")
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df_processed.to_excel(writer, sheet_name="ProcessedData", index=False)
+    output.seek(0)
+    
+    st.download_button(
+        label="Download Processed Excel",
+        data=output,
+        file_name="processed_output.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    os.remove(tmp_path)
