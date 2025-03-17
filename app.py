@@ -1,79 +1,60 @@
 import io
 import os
+import re
+import zipfile
+import shutil
+import tempfile
 import pandas as pd
 import streamlit as st
-import tempfile
-import shutil
 
-def extract_top_info(df):
-    """Extracts job details from the first few rows of the Excel file."""
-    job_number = df.iloc[2, 2] if pd.notna(df.iloc[2, 2]) else "Unknown"
-    customer_name = df.iloc[1, 2] if pd.notna(df.iloc[1, 2]) else "Unknown"
-    order_qty = df.iloc[4, 2] if pd.notna(df.iloc[4, 2]) else "Unknown"
-    return job_number, customer_name, order_qty
+def extract_data_from_excel(excel_file):
+    """Extracts data from the new Excel format."""
+    df_temp = pd.read_excel(excel_file, sheet_name=0, header=[7, 8])  # Read multi-row header
+    
+    # Rename columns to expected format
+    column_mapping = {
+        ('SR.', 'NO.'): 'Sr.No.',
+        ('SPECIFICATION', '\xa0'): 'Material',
+        ('UNIT', '\xa0'): 'Units',
+        ('QTY/', 'UNIT'): 'Qty. per unit',
+        ('NO. OF', 'UNIT'): 'No of units',
+        ('TOTAL', 'QTY'): 'Total Qty.'
+    }
+    
+    df_temp.rename(columns=column_mapping, inplace=True)
+    df_temp = df_temp[list(column_mapping.values())]  # Keep only required columns
+    
+    # Convert numeric columns
+    for col in ['Qty. per unit', 'No of units', 'Total Qty.']:
+        df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0)
+    
+    # Remove empty material rows
+    df_temp = df_temp[df_temp['Material'].notna()]
+    df_temp['Material'] = df_temp['Material'].astype(str).str.strip()
+    
+    return df_temp
 
-def process_excel_file(file_path):
-    """Reads and processes the new Excel format."""
-    df = pd.read_excel(file_path, sheet_name=0, header=None)
-    
-    job_number, customer_name, order_qty = extract_top_info(df)
-    
-    # Find header row dynamically (we assume 'Sr. No.' appears in a specific column range)
-    header_row_idx = None
-    for i in range(len(df)):
-        if "SR." in str(df.iloc[i, 0]).upper() and "MATERIAL" in str(df.iloc[i, 1]).upper():
-            header_row_idx = i
-            break
-    
-    if header_row_idx is None:
-        return None, f"Header row not found in {file_path}"
-    
-    df_data = pd.read_excel(file_path, sheet_name=0, header=header_row_idx)
-    df_data = df_data.dropna(how='all')  # Remove empty rows
-    df_data = df_data.rename(columns=lambda x: str(x).strip())  # Clean column names
-    
-    # Ensure required columns exist
-    required_columns = ["Material", "Specification", "Unit", "QTY/ UNIT", "NO. OF UNIT", "TOTAL QTY"]
-    missing_columns = [col for col in required_columns if col not in df_data.columns]
-    if missing_columns:
-        return None, f"Missing columns {missing_columns} in {file_path}"
-    
-    # Add job info to data
-    df_data["Job Number"] = job_number
-    df_data["Customer Name"] = customer_name
-    df_data["Order Qty"] = order_qty
-    
-    return df_data, None
-
-def process_uploaded_files(uploaded_files):
-    """Processes multiple uploaded Excel files and generates a combined report."""
-    all_data = []
-    errors = []
-    
-    for uploaded_file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-            tmp.write(uploaded_file.read())
-            tmp.close()
-            df, error = process_excel_file(tmp.name)
-            if df is not None:
-                all_data.append(df)
-            if error:
-                errors.append(error)
-    
-    if not all_data:
-        return None, errors
-    
-    combined_df = pd.concat(all_data, ignore_index=True)
+def process_excel_files(input_files):
+    logs = []
     output_excel = io.BytesIO()
+    all_data = []
     
-    with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
-        combined_df.to_excel(writer, sheet_name="Combined Data", index=False)
+    for file_path, original_file in input_files:
+        try:
+            df = extract_data_from_excel(file_path)
+            all_data.append(df)
+        except Exception as e:
+            logs.append(f"Error processing {original_file}: {str(e)}")
+    
+    if all_data:
+        combined_df = pd.concat(all_data, ignore_index=True)
+        combined_df.to_excel(output_excel, index=False, sheet_name='ProcessedData')
     
     output_excel.seek(0)
-    return output_excel, errors
+    return output_excel, logs
 
-# Streamlit UI
-st.title("New Excel Format Processor")
+# Streamlit Frontend
+st.title("Excel Processor - New Format")
 st.write("Upload Excel files to process them.")
 
 uploaded_files = st.file_uploader("Choose Excel files", type=["xlsx", "xls"], accept_multiple_files=True)
@@ -82,17 +63,33 @@ if st.button("Process Files"):
     if not uploaded_files:
         st.error("Please upload at least one file.")
     else:
-        output_excel_io, errors = process_uploaded_files(uploaded_files)
+        file_info = []
+        for file in uploaded_files:
+            file_bytes = file.read()
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+            tmp.write(file_bytes)
+            tmp.close()
+            file_info.append((tmp.name, file.name))
         
-        if errors:
-            st.subheader("Errors")
-            st.text_area("Error Log", "\n".join(errors), height=200)
+        output_excel_io, logs = process_excel_files(file_info)
         
-        if output_excel_io:
-            st.success("Processing complete! Download the combined file below.")
-            st.download_button(
-                label="Download Combined Excel",
-                data=output_excel_io,
-                file_name="combined_output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        st.subheader("Validation Errors")
+        if logs:
+            st.text_area("Errors", "\n".join(logs), height=200)
+        else:
+            st.success("No validation errors.")
+        
+        output_excel_io.seek(0)
+        df_preview = pd.read_excel(output_excel_io, sheet_name='ProcessedData')
+        st.subheader("Processed Data Preview")
+        st.dataframe(df_preview)
+        
+        st.download_button(
+            label="Download Processed Excel",
+            data=output_excel_io,
+            file_name="processed_data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        for tmp_path, _ in file_info:
+            os.remove(tmp_path)
