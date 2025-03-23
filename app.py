@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import zipfile
 import shutil
 import tempfile
 import pandas as pd
@@ -15,7 +16,7 @@ def extract_top_info(df):
         row_values = df.iloc[i].astype(str).str.strip().tolist()
         row_str = " ".join(row_values).lower()
         if "job no." in row_str:
-            job_number = row_values[-1]  # Assume job number is the last value in row
+            job_number = row_values[-1]
         if "customer" in row_str:
             client_name = row_values[-1]
         if "order qty." in row_str:
@@ -26,12 +27,12 @@ def extract_top_info(df):
 
 def process_excel(file_path):
     xls = pd.ExcelFile(file_path)
-    sheet_name = xls.sheet_names[0]  # Assume first sheet
+    sheet_name = xls.sheet_names[0]
     df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
     
     job_number, client_name, top_qty = extract_top_info(df)
     
-    header_row_index = 7  # Based on detected header position
+    header_row_index = 7  # Adjusted for the new format
     df = pd.read_excel(xls, sheet_name=sheet_name, header=header_row_index)
     
     expected_columns = {
@@ -46,7 +47,7 @@ def process_excel(file_path):
     df.rename(columns=expected_columns, inplace=True)
     df = df[list(expected_columns.values())]  # Keep only relevant columns
     
-    df.dropna(subset=["Material"], inplace=True)  # Remove empty rows
+    df.dropna(subset=["Material"], inplace=True)
     df["Total Qty."] = df["Total Qty."].apply(pd.to_numeric, errors="coerce").fillna(0)
     
     return df, job_number, client_name, top_qty
