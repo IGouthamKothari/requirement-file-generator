@@ -23,7 +23,24 @@ def process_uploaded_files(uploaded_files):
         return None
     
     combined_df = pd.concat(all_data, ignore_index=True)
-    combined_df["Total Qty."] = combined_df["Qty. per unit"] * combined_df["No of units"]
+    
+    # Standardize column names
+    combined_df.columns = combined_df.columns.str.strip().str.lower()
+    
+    # Debugging: Print available columns
+    print("Columns in DataFrame:", combined_df.columns.tolist())
+    
+    # Dynamically detect relevant columns
+    qty_col = [col for col in combined_df.columns if "qty" in col and "per unit" in col]
+    no_units_col = [col for col in combined_df.columns if "no" in col and "unit" in col]
+    
+    if qty_col and no_units_col:
+        qty_col = qty_col[0]  # Use the first matching column
+        no_units_col = no_units_col[0]
+        combined_df["Total Qty."] = combined_df[qty_col] * combined_df[no_units_col]
+    else:
+        raise ValueError("Required columns for calculation not found in the uploaded files.")
+    
     combined_df["Material"] = combined_df["Material"].astype(str).str.strip()
     combined_df = combined_df[combined_df["Material"] != ""]
     combined_df = combined_df.groupby(["Material", "Units"], as_index=False)["Total Qty."].sum()
@@ -38,8 +55,8 @@ st.title("Excel Processor - Multiple Files")
 uploaded_files = st.file_uploader("Upload Excel Files", type=["xlsx", "xls"], accept_multiple_files=True)
 
 if uploaded_files and st.button("Process Files"):
-    output_excel_io, df_preview = process_uploaded_files(uploaded_files)
-    if output_excel_io:
+    try:
+        output_excel_io, df_preview = process_uploaded_files(uploaded_files)
         st.subheader("Processed Data Preview")
         st.dataframe(df_preview)
         
@@ -49,5 +66,5 @@ if uploaded_files and st.button("Process Files"):
             file_name="processed_output.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-    else:
-        st.error("No valid data found in the uploaded files.")
+    except Exception as e:
+        st.error(f"Error: {e}")
